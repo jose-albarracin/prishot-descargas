@@ -57,11 +57,9 @@ jobs:
           sleep 10
           echo "--- salida de open:"; cat /tmp/open.log || true
           screencapture -x evidencia/2-con-marca-de-navegador.png
-          if pgrep -lx PriShot; then
-            echo "RESULTADO: con la marca TAMBIÉN abrió (Gatekeeper no la bloqueó en este runner)"
-          else
-            echo "RESULTADO: con la marca NO abrió (Gatekeeper la bloqueó)"
-          fi
+          # pgrep no sirve aquí: Gatekeeper deja el proceso retenido mientras muestra su diálogo.
+          # La prueba es la captura 2 (diálogo «no se puede abrir… desarrollador no identificado»).
+          echo "--- procesos PriShot (pueden estar retenidos por Gatekeeper):"; pgrep -lx PriShot || true
           ( log show --last 1m --style compact --predicate 'process == "syspolicyd"' > /tmp/syspolicyd.log 2>&1 & p=$!; sleep 40; kill $p 2>/dev/null ) || true
           grep -iE "prishot|reject|deny|quarantine|assess" /tmp/syspolicyd.log | tail -25 || true
           cp /tmp/syspolicyd.log evidencia/ || true
