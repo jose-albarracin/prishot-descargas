@@ -1,0 +1,102 @@
+# Prueba que la instalación por comando no deja la marca de "descargado de internet"
+# (que es lo que dispara Gatekeeper en Mac y SmartScreen en Windows) y que PriShot abre.
+name: Prueba de instalación
+
+on:
+  workflow_dispatch:
+
+env:
+  BASE: https://github.com/jose-albarracin/prishot-descargas/releases/latest/download
+  RAW: https://raw.githubusercontent.com/jose-albarracin/prishot-descargas/${{ github.sha }}
+
+jobs:
+  mac:
+    runs-on: macos-14
+    steps:
+      - name: Estado de Gatekeeper en el runner
+        run: |
+          sw_vers
+          spctl --status
+
+      - name: "1. curl no pone la marca de cuarentena"
+        run: |
+          curl -fsSL -o /tmp/crudo.dmg "$BASE/PriShot-mac-arm64.dmg"
+          echo "--- xattr del .dmg bajado con curl:"
+          xattr -l /tmp/crudo.dmg || true
+          if xattr -p com.apple.quarantine /tmp/crudo.dmg 2>/dev/null; then echo "FALLO: el .dmg tiene cuarentena"; exit 1; fi
+          # Copia de la app sin pasar por el script (que quita la marca por si acaso).
+          mkdir -p /tmp/mnt /tmp/sinscript
+          hdiutil attach /tmp/crudo.dmg -nobrowse -readonly -quiet -mountpoint /tmp/mnt
+          ditto /tmp/mnt/PriShot.app /tmp/sinscript/PriShot.app
+          hdiutil detach /tmp/mnt -quiet
+          echo "--- xattr de la app copiada:"
+          xattr -lr /tmp/sinscript/PriShot.app | grep -i quarantine && { echo "FALLO: la app tiene cuarentena"; exit 1; } || echo "sin cuarentena"
+          echo "--- spctl (evalúa la firma, con o sin marca):"
+          spctl -a -vv /tmp/sinscript/PriShot.app 2>&1 || true
+
+      - name: "2. Instalar con el comando de README (curl | bash)"
+        run: |
+          curl -fsSL "$RAW/instalar.sh" | bash
+          sleep 6
+          xattr -lr /Applications/PriShot.app | grep -i quarantine && { echo "FALLO: cuarentena"; exit 1; } || echo "sin cuarentena"
+          pgrep -lx PriShot || { echo "FALLO: PriShot no está corriendo"; exit 1; }
+          mkdir -p evidencia
+          screencapture -x evidencia/1-instalada-por-comando.png
+          pkill -x PriShot || true
+
+      - name: "3. Control negativo: la misma app CON la marca que pone el navegador"
+        run: |
+          sleep 2
+          mkdir -p /tmp/neg
+          ditto /Applications/PriShot.app /tmp/neg/PriShot.app
+          xattr -w com.apple.quarantine "0083;$(printf %x $(date +%s));Safari;$(uuidgen)" /tmp/neg/PriShot.app
+          xattr -l /tmp/neg/PriShot.app
+          open /tmp/neg/PriShot.app || true
+          sleep 8
+          screencapture -x evidencia/2-con-marca-de-navegador.png
+          if pgrep -lx PriShot; then
+            echo "RESULTADO: con la marca TAMBIÉN abrió (Gatekeeper no la bloqueó en este runner)"
+          else
+            echo "RESULTADO: con la marca NO abrió (Gatekeeper la bloqueó)"
+          fi
+          log show --last 1m --style compact --predicate 'process == "syspolicyd"' 2>/dev/null | grep -iE "prishot|reject|deny|quarantine" | tail -20 || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidencia-mac
+          path: evidencia/
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - name: "1. Invoke-WebRequest y curl.exe no ponen la marca (Zone.Identifier)"
+        shell: pwsh
+        run: |
+          $f = Join-Path $env:RUNNER_TEMP 'iwr.exe'
+          Invoke-WebRequest -UseBasicParsing "$env:BASE/PriShot-Setup-x64.exe" -OutFile $f
+          curl.exe -fsSL -o "$env:RUNNER_TEMP\curl.exe.bin" "$env:BASE/PriShot-Setup-x64.exe"
+          foreach ($x in @($f, "$env:RUNNER_TEMP\curl.exe.bin")) {
+            "--- flujos de $x"
+            Get-Item $x -Stream * | Format-Table Stream, Length
+            if (Get-Item $x -Stream Zone.Identifier -ErrorAction SilentlyContinue) { throw "FALLO: $x tiene Zone.Identifier" }
+          }
+
+      - name: "2. Instalar con el comando de README (irm | iex)"
+        shell: pwsh
+        run: |
+          irm "$env:RAW/instalar.ps1" | iex
+          Start-Sleep 5
+          $p = Get-Process PriShot -ErrorAction SilentlyContinue
+          if (-not $p) { throw 'FALLO: PriShot no está corriendo' }
+          $p | Format-Table Id, Path
+          Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' | Select-Object PriShot
+
+      - name: "3. Lo mismo en Windows PowerShell 5.1 (el que trae Windows de fábrica)"
+        shell: powershell
+        run: |
+          $PSVersionTable.PSVersion
+          irm "$env:RAW/instalar.ps1" | iex
+          Start-Sleep 5
+          if (-not (Get-Process PriShot -ErrorAction SilentlyContinue)) { throw 'FALLO: PriShot no está corriendo' }
+          'PriShot corriendo tras instalar con PowerShell 5.1'
