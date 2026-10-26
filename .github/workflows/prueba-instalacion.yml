@@ -12,6 +12,7 @@ env:
 jobs:
   mac:
     runs-on: macos-14
+    timeout-minutes: 15
     steps:
       - name: Estado de Gatekeeper en el runner
         run: |
@@ -51,15 +52,19 @@ jobs:
           ditto /Applications/PriShot.app /tmp/neg/PriShot.app
           xattr -w com.apple.quarantine "0083;$(printf %x $(date +%s));Safari;$(uuidgen)" /tmp/neg/PriShot.app
           xattr -l /tmp/neg/PriShot.app
-          open /tmp/neg/PriShot.app || true
-          sleep 8
+          # En segundo plano: si Gatekeeper muestra su diálogo, `open` se queda esperando.
+          open /tmp/neg/PriShot.app >/tmp/open.log 2>&1 &
+          sleep 10
+          echo "--- salida de open:"; cat /tmp/open.log || true
           screencapture -x evidencia/2-con-marca-de-navegador.png
           if pgrep -lx PriShot; then
             echo "RESULTADO: con la marca TAMBIÉN abrió (Gatekeeper no la bloqueó en este runner)"
           else
             echo "RESULTADO: con la marca NO abrió (Gatekeeper la bloqueó)"
           fi
-          log show --last 1m --style compact --predicate 'process == "syspolicyd"' 2>/dev/null | grep -iE "prishot|reject|deny|quarantine" | tail -20 || true
+          ( log show --last 1m --style compact --predicate 'process == "syspolicyd"' > /tmp/syspolicyd.log 2>&1 & p=$!; sleep 40; kill $p 2>/dev/null ) || true
+          grep -iE "prishot|reject|deny|quarantine|assess" /tmp/syspolicyd.log | tail -25 || true
+          cp /tmp/syspolicyd.log evidencia/ || true
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -69,6 +74,7 @@ jobs:
 
   windows:
     runs-on: windows-latest
+    timeout-minutes: 15
     steps:
       - name: "1. Invoke-WebRequest y curl.exe no ponen la marca (Zone.Identifier)"
         shell: pwsh
